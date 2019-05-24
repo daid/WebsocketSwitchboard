@@ -1,18 +1,46 @@
 <html>
 <head>
 <script>
-var ws = new WebSocket("ws://127.0.0.1:8000/client");
+var ws = new WebSocket("ws://127.0.0.1:8000/game/master");
 ws.onopen = function(event)
 {
     console.log(event)
-    ws.send("Hello")
 }
 ws.onmessage = function(event)
 {
     console.log(event)
     console.log(event.data)
+    if (event.data == "AUTH")
+    {
+        ws.send("AUTH:VERY_SECRET_KEY")
+    }
+    else if (event.data.startsWith("ID:"))
+    {
+        ws_client = new WebSocket("ws://127.0.0.1:8000/game/" + event.data.substr(3))
+        ws_client.onopen = function(event)
+        {
+            console.log("client", event)
+        }
+        ws_client.onmessage = function(event)
+        {
+            console.log("client", event)
+            ws_client.send(event.data)
+        }
+        ws_client.onclose = function(event)
+        {
+            console.log("client", event)
+        }
+    }
+    else if (event.data.startsWith("WS-OPEN:"))
+    {
+        ws.send("WS-" + event.data.substr(8) + ":HELLOW!")
+    }
 }
 ws.onclose = function(event)
+{
+    console.log(event)
+}
+ws.onerror = function(event)
 {
     console.log(event)
 }

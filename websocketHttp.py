@@ -35,7 +35,7 @@ class WebsocketMixin:
         full_message = b''
         self.do_NEW_WEBSOCKET()
         try:
-            while True:
+            while not self.rfile.closed:
                 frame = websocket.readFrame(self.rfile)
                 if frame is None:
                     return
@@ -66,8 +66,10 @@ class WebsocketMixin:
 
     def send_websocket(self, message):
         with self.__lock:
-            websocket.writeFrame(self.wfile, websocket.opcode_text, message)
+            if not self.wfile.closed:
+                websocket.writeFrame(self.wfile, websocket.opcode_text, message)
 
     def send_websocket_ping(self):
         with self.__lock:
-            websocket.writeFrame(self.wfile, websocket.opcode_ping, b'')
+            if not self.wfile.closed:
+                websocket.writeFrame(self.wfile, websocket.opcode_ping, b'')
