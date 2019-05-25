@@ -48,20 +48,48 @@ class GameSession:
             self.key += bytes([secrets.choice(self.KEY_CHARS)])
         self.master_websocket = websocket
         self.websockets = {}
+        self.assets = {}
+        self.asset_trigger = threading.Condition()
+
+    def getAsset(self, path):
+        if path in self.assets:
+            return self.assets[path]
+        self.master_websocket.send_websocket(b"GET:" + path.encode("utf-8"))
+        with self.asset_trigger:
+            while path not in self.assets:
+                self.asset_trigger.wait()
+        return self.assets[path]
 
 
 class HTTPRequestHandler(websocketHttp.WebsocketMixin, http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/":
             return self.sendStaticFile("www/index.html")
+        if self.path.startswith("/game/"):
+            idx = self.path.find("/", 6)
+            if idx == -1:
+                return self.sendFileNotFound()
+            game_id = self.path[6:idx].encode("utf-8")
+            try:
+                game = self.server.game_sessions[game_id]
+            except KeyError:
+                return self.sendFileNotFound()
+            asset = game.getAsset(self.path[idx:])
+            if asset is None:
+                return self.sendFileNotFound()
+            self.send_response(http.HTTPStatus.OK)
+            self.send_header("Content-Length", len(asset))
+            self.end_headers()
+            self.wfile.write(asset)
+            return
         return self.sendFileNotFound()
 
     def sendStaticFile(self, path):
-        self.send_response(http.HTTPStatus.OK)
         try:
             f = open(path, "rb")
         except IOError:
             return self.sendFileNotFound()
+        self.send_response(http.HTTPStatus.OK)
         fs = os.fstat(f.fileno())
         self.send_header("Content-Length", str(fs.st_size))
         self.send_header("Last-Modified", self.date_time_string(fs.st_mtime))
@@ -110,6 +138,13 @@ class HTTPRequestHandler(websocketHttp.WebsocketMixin, http.server.BaseHTTPReque
                     self.game.websockets[ws_id].send_websocket(message[message.find(b":")+1:])
                 except:
                     pass
+            elif message.startswith(b"GET:"):
+                idx = message.find(b":", 4)
+                name = message[4:idx].decode("utf-8")
+                asset = message[idx+1:]
+                self.game.assets[name] = asset
+                with self.game.asset_trigger:
+                    self.game.asset_trigger.notify_all()
             else:
                 logging.warning("Unknown master command: %s", message)
         elif self.game is not None:

@@ -35,6 +35,10 @@ ws.onmessage = function(event)
     {
         ws.send("WS-" + event.data.substr(8) + ":HELLOW!")
     }
+    else if (event.data.startsWith("GET:"))
+    {
+        ws.send("GET:" + event.data.substr(4) + ":FILE CONTENTS!")
+    }
 }
 ws.onclose = function(event)
 {
