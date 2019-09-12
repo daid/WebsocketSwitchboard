@@ -1,22 +1,26 @@
 <html>
 <head>
 <script>
-var ws = new WebSocket("ws://127.0.0.1:8000/game/master");
+var ws = new WebSocket("ws://127.0.0.1:8080/game/master");
+var server_id;
+var server_secret;
 ws.onopen = function(event)
 {
     console.log(event)
 }
 ws.onmessage = function(event)
 {
-    console.log(event)
-    console.log(event.data)
+    console.log("SERVER", event, event.data)
     if (event.data == "AUTH")
     {
         ws.send("AUTH:VERY_SECRET_KEY")
     }
     else if (event.data.startsWith("ID:"))
     {
-        ws_client = new WebSocket("ws://127.0.0.1:8000/game/" + event.data.substr(3))
+        var params = event.data.split(":")
+        server_id = params[1]
+        server_secret = params[2]
+        ws_client = new WebSocket("ws://127.0.0.1:8080/game/" + server_id)
         ws_client.onopen = function(event)
         {
             console.log("client", event)
@@ -31,22 +35,47 @@ ws.onmessage = function(event)
             console.log("client", event)
         }
     }
-    else if (event.data.startsWith("WS-OPEN:"))
+    else if (event.data == "CLIENT_CONNECTED")
     {
-        ws.send("WS-" + event.data.substr(8) + ":HELLOW!")
-    }
-    else if (event.data.startsWith("GET:"))
-    {
-        ws.send("GET:" + event.data.substr(4) + ":FILE CONTENTS!")
+        ws.send("HELLOW!")
+        
+        ws_server2 = new WebSocket("ws://127.0.0.1:8080/game/master");
+        ws_server2.onmessage = function(event)
+        {
+            console.log("SERVER2", event, event.data)
+            if (event.data == "AUTH")
+            {
+                ws_server2.send("AUTH:VERY_SECRET_KEY:" + server_secret)
+                
+                ws_client2 = new WebSocket("ws://127.0.0.1:8080/game/" + server_id)
+                ws_client2.onopen = function(event)
+                {
+                    console.log("client2", event)
+                }
+                ws_client2.onmessage = function(event)
+                {
+                    console.log("client2", event)
+                    ws_client2.send(event.data)
+                }
+                ws_client2.onclose = function(event)
+                {
+                    console.log("client2", event)
+                }
+            }
+        }
+        ws_server2.onclose = function(event)
+        {
+            console.log("SERVER2", event)
+        }
     }
 }
 ws.onclose = function(event)
 {
-    console.log(event)
+    console.log("SERVER", event)
 }
 ws.onerror = function(event)
 {
-    console.log(event)
+    console.log("SERVER", event)
 }
 </script>
 </head>
