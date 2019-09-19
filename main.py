@@ -51,8 +51,10 @@ secrets = random.SystemRandom()
 #           Requires a GET with upgrade to websocket or raw.
 #           Must supply the key and secret as HTTP headers.
 #       /game/connect/[key]
-#           As a client, connect to a game. Will make a direct transparent channel to a /game/master connected socket if available for the given [key].
-#           Or returns a 404 if the game does not exist and a 503 if the server has no connected socket yet.
+#           As a client, connect to a game.
+#               When connecting as a raw or websocket will make a direct transparent channel to a /game/master connected socket if available for the given [key].
+#               Or returns a 404 if the game does not exist and a 503 if the server has no connected socket yet.
+#           Or when using a normal http GET request, will return server info for this game.
 #       /game/list/[game_id]
 #           Get a list of public games for a specific game_id. The client should filter out incompattible versions,
 #               but those are still listed to let the player know that they have the wrong version of the game.
@@ -164,7 +166,7 @@ class HTTPRequestHandler(rawsocketHttp.RawsocketMixin, websocketHttp.WebsocketMi
     def do_GET(self):
         if self.path == "/":
             return self.sendStaticFile("www/index.html")
-        if self.path.startswith("/game/list/"):
+        elif self.path.startswith("/game/list/"):
             game_id = int(self.path[11:])
             result = []
             for session in self.server.getGames(game_id):
@@ -176,6 +178,18 @@ class HTTPRequestHandler(rawsocketHttp.RawsocketMixin, websocketHttp.WebsocketMi
                     "port": session.port
                 })
             return self.sendJson(result)
+        elif self.path.startswith("/game/connect/"):
+            game_key = self.path[14:]
+            game = self.server.findGame(game_key)
+            if game is None:
+                return http.HTTPStatus.NOT_FOUND
+            return self.sendJson({
+                "name": game.name,
+                "version": game.version,
+                "key": game.key.decode("ascii"),
+                "address": game.getAddressesFor(self.client_address[0]),
+                "port": game.port
+            })
         self.send_error(http.HTTPStatus.NOT_FOUND)
 
     def do_POST(self):
@@ -198,8 +212,14 @@ class HTTPRequestHandler(rawsocketHttp.RawsocketMixin, websocketHttp.WebsocketMi
             if  "public" not in post_data or "address" not in post_data or "port" not in post_data:
                 self.send_error(http.HTTPStatus.BAD_REQUEST)
                 return
+            if not isinstance(post_data["address"], list):
+                self.send_error(http.HTTPStatus.BAD_REQUEST)
+                return
+            for address in post_data["address"]:
+                if not isinstance(address, str):
+                    self.send_error(http.HTTPStatus.BAD_REQUEST)
+                    return
             # TODO: Check secret hash
-            # TODO: Check if address is in proper format
             game = GameSession(
                 name = post_data["name"], 
                 game_id = int(post_data["game_id"]), 
