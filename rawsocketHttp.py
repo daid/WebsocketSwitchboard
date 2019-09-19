@@ -16,8 +16,9 @@ class RawsocketMixin:
             return False
         
         if "Connection" in self.headers and "Upgrade" in self.headers and self.headers["Connection"].lower() == "upgrade" and self.headers["Upgrade"].lower() == "raw":
-            if not self.do_RAW():
-                self.send_error(http.HTTPStatus.BAD_REQUEST, "Bad raw upgrade request")
+            error = self.do_RAW()
+            if error is not None:
+                self.send_error(error)
                 return False
 
             self.send_response(http.HTTPStatus.SWITCHING_PROTOCOLS)

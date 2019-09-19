@@ -1,6 +1,22 @@
 <html>
 <head>
 <script>
+var req = new XMLHttpRequest();
+req.open("POST", "/game/register", false)
+req.setRequestHeader("Content-Type", "application/json")
+req.send(JSON.stringify({
+    "name": "TEST",
+    "game_id": 1,
+    "game_version": 1,
+    "secret_hash": "",
+    "public": true,
+    "address": ["123", "456"],
+    "port": 32032
+}))
+console.log(req.response)
+
+if (0) {
+
 var ws = new WebSocket("ws://127.0.0.1:8080/game/master");
 var server_id;
 var server_secret;
@@ -76,6 +92,8 @@ ws.onclose = function(event)
 ws.onerror = function(event)
 {
     console.log("SERVER", event)
+}
+
 }
 </script>
 </head>

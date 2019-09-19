@@ -31,8 +31,9 @@ class WebsocketMixin:
                 self.send_error(http.HTTPStatus.BAD_REQUEST, "Bad Websocket upgrade request")
                 return False
             
-            if not self.do_WEBSOCKET():
-                self.send_error(http.HTTPStatus.BAD_REQUEST, "Bad Websocket upgrade request")
+            error = self.do_WEBSOCKET()
+            if error is not None:
+                self.send_error(error)
                 return False
 
             self.send_response(http.HTTPStatus.SWITCHING_PROTOCOLS)

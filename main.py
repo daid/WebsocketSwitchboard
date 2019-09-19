@@ -9,73 +9,133 @@ import random
 import math
 import logging
 import struct
+import json
 
 import config
 import websocketHttp
 import rawsocketHttp
 
-
+# pythons secrets library is introduced in 3.7, so use the system random instead (which is what secrets also uses)
 secrets = random.SystemRandom()
 
 ## WebSocketSwitchboard proxy.
-#   The switchboard allows games to connect to the switchboard to a single websocket connection.
-#       The switchboard will give the game an ID to display to the users on how to connect to the game.
-#           http://[IP]/game/master
-#   Clients can then connect to the switchboard webserver and fill in the ID.
-#       The switchboard provides a websocket channel to connect clients connected to the switchboard to the game.
-#           ws://[IP]/game/[GAME_ID]
-#   Communication with game websocket: (>to game <from game
-#       >AUTH
-#       <AUTH:[SECRET]
-#       >ID:[GAME_ID]:[GAME_SECRET]
-#   Each time a client connects to the switchboard on a GAME_ID, the socket connection to the server will be deticated to that client, making a point to point connection.
-#       >CLIENT_CONNECTED
-#   The server is expected to connect again to the switchboard, and send:
-#       >AUTH
-#       <AUTH:[SECRET]:[GAME_SECRET]
-#   This new connection will be used for the next connecting client.
+#   The Switchboard proxy allows clients and servers to connect to each other by using this proxy as middle man.
+#       The switchboard serves two main goals:
+#       - Listing online games, allowing clients to find the server.
+#   There are two main ways of connecting to the server, by raw socket or by websocket.
+#   Terminology:
+#       - Server: The game server.
+#       - Switchboard: This application.
+#       - Client: Client games that want to connect to the server.
+#       - Game session: An instance of a running server exposing itself to the world for connections.
+#   Both options start as a http request to punch trough firewalls, and optionally support SSL connections.
+#   The server first needs to register a game with a simple http POST call, which will tell the server the
+#       "key" and "secret". The "key" should be shown to the users to allow connecting to the game.
+#       The "secret" is for the server only to start new connections to the game from the server side.
+#   API endpoints:
+#       /game/register
+#           As a server register a new game session, only POST requests can be done.
+#           Requires following parameters:
+#               - name: Name that the server wants to give to this game (string)
+#               - game_id: Identifies the type of game (number)
+#               - game_version: Identifies the version of the game (number)
+#               - secret_hash: SHA1 hash of the nonce and a shared switchboard password (string)
+#               - public: true if the game will be publicly listed (bool)
+#               - address: ip addresses where the server thinks it runs. Useful if a client is in the same subnet and thus can directly connect. (list of strings)
+#               - port: port at which the server runs the game, to see if we can directly connect instead of using the switchboard. (number)
+#           Will reply with:
+#               - key: Unique key for this game session. Only upper case and numbers for easy entry by a user. (string)
+#               - secret: Unique secret for the server to identify itself for this game. (string)
+#       /game/master
+#           As a server connect as a websocket or raw socket and wait for a client websocket to connect.
+#           Requires a GET with upgrade to websocket or raw.
+#           Must supply the key and secret as HTTP headers.
+#       /game/connect/[key]
+#           As a client, connect to a game. Will make a direct transparent channel to a /game/master connected socket if available for the given [key].
+#           Or returns a 404 if the game does not exist and a 503 if the server has no connected socket yet.
+#       /game/list/[game_id]
+#           Get a list of public games for a specific game_id. The client should filter out incompattible versions,
+#               but those are still listed to let the player know that they have the wrong version of the game.
+#           Listed games are in json format and is reported as an array of objects with the following fields:
+#           - name: Name of the server
+#           - version: Version of the game, client must check for a match
+#           - key: Unique game connect key for this session
+#           - address: List of IP addresses for direct connection. (optional)
+#           - port: port to connect to for direct connection. (optional)
+#           Note that the reported addresses could be an external address detected by the switchboard or the internal addresses reported by the server
+#               if the switchboard detects that both client and server have the same origin.
 
 class GameSession:
     KEY_LENGTH = 5
     SECRET_LENGTH = 32
     KEY_CHARS = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-    def __init__(self):
+    def __init__(self, name, game_id, version, public, public_address, private_address, port):
         self.__lock = threading.Lock()
+        self.__name = name
+        self.__game_id = game_id
+        self.__version = version
+        self.__public = public
+        self.__public_address = public_address
+        self.__private_address = private_address
+        self.__port = port
         self.__key = b""
-        self.__server_secret = b""
-        self.__websocket_socket_in_waiting = None
-        self.__rawsocket_in_waiting = None
+        self.__secret = b""
+        self.__waiting_websocket = None
+        self.__waiting_rawsocket = None
         self.__timeout = time.monotonic() + 60.0
         
         for n in range(self.KEY_LENGTH):
             self.__key += bytes([secrets.choice(self.KEY_CHARS)])
         for n in range(self.SECRET_LENGTH):
-            self.__server_secret += bytes([secrets.choice(self.KEY_CHARS)])
+            self.__secret += bytes([secrets.choice(self.KEY_CHARS)])
+
+    @property
+    def name(self):
+        return self.__name
+
+    @property
+    def version(self):
+        return self.__version
+
+    @property
+    def game_id(self):
+        return self.__game_id
+
+    @property
+    def public(self):
+        return self.__public
+
+    def getAddressesFor(self, remote_address):
+        if remote_address == self.__public_address:
+            return self.__private_address + [self.__public_address]
+        return [self.__public_address]
+
+    @property
+    def port(self):
+        return self.__port
     
     @property
     def key(self):
         return self.__key
 
     @property
-    def server_secret(self):
-        return self.__server_secret
-    
+    def secret(self):
+        return self.__secret
+
     def grabWebsocket(self):
-        self.__timeout = time.monotonic() + 60.0
         with self.__lock:
-            result = self.__websocket_socket_in_waiting
-            self.__websocket_socket_in_waiting = None
+            result = self.__waiting_websocket
+            self.__waiting_websocket = None
         return result
     
     def setWaitingWebsocket(self, socket):
         self.__timeout = time.monotonic() + 60.0
         with self.__lock:
-            if self.__websocket_socket_in_waiting is not None:
-                self.__websocket_socket_in_waiting.rfile.close()
-            self.__websocket_socket_in_waiting = socket
+            if self.__waiting_websocket is not None:
+                self.__waiting_websocket.rfile.close()
+            self.__waiting_websocket = socket
 
     def grabRawsocket(self):
-        self.__timeout = time.monotonic() + 60.0
         with self.__lock:
             result = self.__rawsocket_in_waiting
             self.__rawsocket_in_waiting = None
@@ -84,17 +144,17 @@ class GameSession:
     def setWaitingRawsocket(self, socket):
         self.__timeout = time.monotonic() + 60.0
         with self.__lock:
-            if self.__rawsocket_in_waiting is not None:
-                self.__rawsocket_in_waiting.rfile.close()
-            self.__rawsocket_in_waiting = socket
+            if self.__waiting_rawsocket is not None:
+                self.__waiting_rawsocket.rfile.close()
+            self.__waiting_rawsocket = socket
 
     def hasTimeout(self):
-        if self.__websocket_socket_in_waiting is not None:
-            if not self.__websocket_socket_in_waiting.rfile.closed:
+        if self.__waiting_websocket is not None:
+            if not self.__waiting_websocket.rfile.closed:
                 self.__timeout = time.monotonic() + 60.0
                 return False
-        if self.__rawsocket_in_waiting is not None:
-            if not self.__rawsocket_in_waiting.rfile.closed:
+        if self.__waiting_rawsocket is not None:
+            if not self.__waiting_rawsocket.rfile.closed:
                 self.__timeout = time.monotonic() + 60.0
                 return False
         return time.monotonic() > self.__timeout
@@ -104,7 +164,58 @@ class HTTPRequestHandler(rawsocketHttp.RawsocketMixin, websocketHttp.WebsocketMi
     def do_GET(self):
         if self.path == "/":
             return self.sendStaticFile("www/index.html")
-        return self.sendFileNotFound()
+        if self.path.startswith("/game/list/"):
+            game_id = int(self.path[11:])
+            result = []
+            for session in self.server.getGames(game_id):
+                result.append({
+                    "name": session.name,
+                    "version": session.version,
+                    "key": session.key.decode("ascii"),
+                    "address": session.getAddressesFor(self.client_address[0]),
+                    "port": session.port
+                })
+            return self.sendJson(result)
+        self.send_error(http.HTTPStatus.NOT_FOUND)
+
+    def do_POST(self):
+        if self.path == "/game/register":
+            if "Content-Length" not in self.headers or "Content-Type" not in self.headers:
+                self.send_error(http.HTTPStatus.BAD_REQUEST)
+                return
+            if self.headers["Content-Type"] != "application/json":
+                self.send_error(http.HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                post_data = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            except ValueError:
+                self.send_error(http.HTTPStatus.BAD_REQUEST)
+                return
+
+            if "name" not in post_data or "game_id" not in post_data or "game_version" not in post_data or "secret_hash" not in post_data:
+                self.send_error(http.HTTPStatus.BAD_REQUEST)
+                return
+            if  "public" not in post_data or "address" not in post_data or "port" not in post_data:
+                self.send_error(http.HTTPStatus.BAD_REQUEST)
+                return
+            # TODO: Check secret hash
+            # TODO: Check if address is in proper format
+            game = GameSession(
+                name = post_data["name"], 
+                game_id = int(post_data["game_id"]), 
+                version = int(post_data["game_version"]),
+                public = bool(post_data["public"]),
+                public_address = self.client_address[0],
+                private_address = post_data["address"],
+                port = int(post_data["port"])
+            )
+            if not self.server.addGame(game):
+                # TODO, we should just retry.
+                self.send_error(http.HTTPStatus.INTERNAL_SERVER_ERROR)
+                return
+
+            return self.sendJson({"key": game.key.decode("ascii"), "secret": game.secret.decode("ascii")})
+        self.send_error(http.HTTPStatus.NOT_FOUND)
 
     def sendStaticFile(self, path):
         try:
@@ -119,113 +230,70 @@ class HTTPRequestHandler(rawsocketHttp.RawsocketMixin, websocketHttp.WebsocketMi
         shutil.copyfileobj(f, self.wfile)
         f.close()
 
-    def sendFileNotFound(self):
-        self.send_response(http.HTTPStatus.NOT_FOUND)
-        self.send_header("Content-Length", "0")
+    def sendJson(self, data):
+        response = json.dumps(data)
+        self.send_response(http.HTTPStatus.OK)
+        self.send_header("Content-Length", len(response))
         self.end_headers()
+        self.wfile.write(response.encode("ascii"))
+
+    def __handleWebOrRawConnect(self, socket_type):
+        if self.path == "/game/master":
+            if not "Game-Key" in self.headers or not "Game-Secret" in self.headers:
+                logging.warning("Master connection: No game or secret supplied")
+                return http.HTTPStatus.BAD_REQUEST
+            game_key = self.headers["Game-Key"]
+            secret = self.headers["Game-Secret"]
+            game = self.server.findGame(game_key)
+            if game is None:
+                logging.warning("Master connection: Game not found")
+                return http.HTTPStatus.NOT_FOUND
+            if game.secret != secret:
+                logging.warning("Master connection: Secret mismatch")
+                return http.HTTPStatus.BAD_REQUEST
+            if socket_type == "Web":
+                game.setWaitingWebsocket(self)
+            else:
+                game.setWaitingRawsocket(self)
+            return
+        elif self.path.startswith("/game/connect/"):
+            game_key = self.path[14:]
+            game = self.server.findGame(game_key)
+            if game is None:
+                return http.HTTPStatus.NOT_FOUND
+            if socket_type == "Web":
+                self.other = game.grabWebsocket()
+            else:
+                self.other = game.grabRawsocket()
+            if self.other is None:
+                return http.HTTPStatus.SERVICE_UNAVAILABLE
+            self.other.other = self
+            return
+        return http.HTTPStatus.NOT_FOUND
 
     def do_WEBSOCKET(self):
-        if not self.path.startswith("/game/"):
-            logging.warning("Incorrect websocket path: %s", self.path)
-            return False
-
-        if self.path == "/game/master":
-            self.game = None
-            self.other = None
-        else:
-            game_id = self.path[6:].encode("utf-8")
-            try:
-                game = self.server.game_sessions[game_id]
-            except KeyError:
-                logging.warning("Failed to find game: %s", game_id)
-                return False
-            else:
-                self.other = game.grabWebsocket()
-                if self.other is None:
-                    logging.warning("No socket available to grab.")
-                    return False
-                self.other.other = self
-        return True
+        return self.__handleWebOrRawConnect("Web")
 
     def websocket_OPEN(self):
         if self.path == "/game/master":
-            self.websocket_send(b"AUTH")
+            pass
         else:
             self.other.websocket_send(b"CLIENT_CONNECTED")
 
     def websocket_MESSAGE(self, message):
         if self.other is not None:
             self.other.websocket_send(message)
-        elif self.path == "/game/master":
-            parts = message.split(b":")
-            if self.game is None and parts[0] == b"AUTH":
-                # No game yet, expect an AUTH reply.
-                if len(parts) > 2 and parts[1] == config.server_shared_secret:
-                    for game in self.server.game_sessions.values():
-                        if game.server_secret == parts[2]:
-                            self.game = game
-                            break
-                    if game is not None:
-                        self.game.setWaitingWebsocket(self)
-                    else:
-                        self.rfile.close()
-                elif len(parts) > 1 and parts[1] == config.server_shared_secret:
-                    self.game = GameSession()
-                    self.game.setWaitingWebsocket(self)
-                    self.server.cleanTimeoutSessions()
-                    self.server.game_sessions[self.game.key] = self.game
-                    self.websocket_send(b"ID:" + self.game.key + b":" + self.game.server_secret)
-                else:
-                    self.rfile.close()
-            else:
-                self.rfile.close()
     
     def websocket_CLOSE(self):
         if self.other is not None:
             self.other.rfile.close()
 
     def do_RAW(self):
-        if not self.path.startswith("/game/"):
-            logging.warning("Incorrect rawsocket path: %s", self.path)
-            return False
-
-        if self.path == "/game/master":
-            if "Shared-secret" in self.headers and self.headers["Shared-secret"].encode("utf-8") == config.server_shared_secret:
-                if "Server-secret" in self.headers:
-                    for game in self.server.game_sessions.values():
-                        if game.server_secret == self.headers["Server-secret"]:
-                            self.game = game
-                            break
-                    if game is not None:
-                        self.game.setWaitingRawsocket(self)
-                    else:
-                        return False
-                else:
-                    self.game = GameSession()
-                    self.game.setWaitingRawsocket(self)
-                    self.server.cleanTimeoutSessions()
-                    self.server.game_sessions[self.game.key] = self.game
-            else:
-                return False
-        else:
-            game_id = self.path[6:].encode("utf-8")
-            try:
-                game = self.server.game_sessions[game_id]
-            except KeyError:
-                logging.warning("Failed to find game: %s", game_id)
-                return False
-            else:
-                self.other = game.grabRawsocket()
-                if self.other is None:
-                    logging.warning("No socket available to grab.")
-                    return False
-                self.other.other = self
-        return True
+        return self.__handleWebOrRawConnect("Raw")
 
     def rawsocket_OPEN(self):
         if self.path == "/game/master":
-            self.other = None
-            self.rawsocket_send(struct.pack("!II5sI32s", 4 + 5 + 4 + 32, 5, self.game.key, 32, self.game.server_secret))
+            pass
         else:
             self.other.rawsocket_send(struct.pack("!I", 0))
 
@@ -237,10 +305,29 @@ class HTTPRequestHandler(rawsocketHttp.RawsocketMixin, websocketHttp.WebsocketMi
         if self.other is not None:
             self.other.rfile.close()
 
+
 class Server(http.server.ThreadingHTTPServer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.game_sessions = {}
+
+    def addGame(self, game):
+        self.cleanTimeoutSessions()
+        if game.key in self.game_sessions:
+            return False
+        self.game_sessions[game.key] = game
+        return True
+
+    def findGame(self, game_key):
+        self.cleanTimeoutSessions()
+        try:
+            return self.game_sessions[game_key]
+        except KeyError:
+            return None
+
+    def getGames(self, game_id):
+        self.cleanTimeoutSessions()
+        return [session for session in self.game_sessions.values() if session.public and session.game_id == game_id]
 
     def cleanTimeoutSessions(self):
         self.game_sessions = {k:v for (k,v) in self.game_sessions.items() if not v.hasTimeout()}
