@@ -244,7 +244,7 @@ class HTTPRequestHandler(rawsocketHttp.RawsocketMixin, websocketHttp.WebsocketMi
         try:
             f = open(path, "rb")
         except IOError:
-            return self.sendFileNotFound()
+            return self.send_error(http.HTTPStatus.NOT_FOUND)
         self.send_response(http.HTTPStatus.OK)
         fs = os.fstat(f.fileno())
         self.send_header("Content-Length", str(fs.st_size))
