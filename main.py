@@ -1,5 +1,6 @@
 import http.server
 import http
+import socketserver
 import sys
 import threading
 import time
@@ -108,6 +109,8 @@ class GameSession:
         return self.__public
 
     def getAddressesFor(self, remote_address):
+        if self.__port == 0:
+            return []
         if remote_address == self.__public_address:
             return self.__private_address + [self.__public_address]
         return [self.__public_address]
@@ -201,7 +204,7 @@ class HTTPRequestHandler(rawsocketHttp.RawsocketMixin, websocketHttp.WebsocketMi
                 self.send_error(http.HTTPStatus.BAD_REQUEST)
                 return
             try:
-                post_data = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                post_data = json.loads(self.rfile.read(int(self.headers["Content-Length"])).decode("utf-8"))
             except ValueError:
                 self.send_error(http.HTTPStatus.BAD_REQUEST)
                 return
@@ -326,7 +329,7 @@ class HTTPRequestHandler(rawsocketHttp.RawsocketMixin, websocketHttp.WebsocketMi
             self.other.rfile.close()
 
 
-class Server(http.server.ThreadingHTTPServer):
+class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.game_sessions = {}
