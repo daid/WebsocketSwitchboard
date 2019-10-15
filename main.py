@@ -37,7 +37,7 @@ secrets = random.SystemRandom()
 #           As a server register a new game session, only POST requests can be done.
 #           Requires following parameters:
 #               - name: Name that the server wants to give to this game (string)
-#               - game_id: Identifies the type of game (number)
+#               - game_name: Identifies the type of game (string)
 #               - game_version: Identifies the version of the game (number)
 #               - secret_hash: SHA1 hash of the nonce and a shared switchboard password (string)
 #               - public: true if the game will be publicly listed (bool)
@@ -55,8 +55,8 @@ secrets = random.SystemRandom()
 #               When connecting as a raw or websocket will make a direct transparent channel to a /game/master connected socket if available for the given [key].
 #               Or returns a 404 if the game does not exist and a 503 if the server has no connected socket yet.
 #           Or when using a normal http GET request, will return server info for this game.
-#       /game/list/[game_id]
-#           Get a list of public games for a specific game_id. The client should filter out incompattible versions,
+#       /game/list/[game_name]
+#           Get a list of public games for a specific game_name. The client should filter out incompattible versions,
 #               but those are still listed to let the player know that they have the wrong version of the game.
 #           Listed games are in json format and is reported as an array of objects with the following fields:
 #           - name: Name of the server
@@ -71,10 +71,10 @@ class GameSession:
     KEY_LENGTH = 5
     SECRET_LENGTH = 32
     KEY_CHARS = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-    def __init__(self, name, game_id, version, public, public_address, private_address, port):
+    def __init__(self, name, game_name, version, public, public_address, private_address, port):
         self.__lock = threading.Lock()
         self.__name = name
-        self.__game_id = game_id
+        self.__game_name = game_name
         self.__version = version
         self.__public = public
         self.__public_address = public_address
@@ -100,8 +100,8 @@ class GameSession:
         return self.__version
 
     @property
-    def game_id(self):
-        return self.__game_id
+    def game_name(self):
+        return self.__game_name
 
     @property
     def public(self):
@@ -167,9 +167,9 @@ class HTTPRequestHandler(rawsocketHttp.RawsocketMixin, websocketHttp.WebsocketMi
         if self.path == "/":
             return self.sendStaticFile("www/index.html")
         elif self.path.startswith("/game/list/"):
-            game_id = int(self.path[11:])
+            game_name = self.path[11:]
             result = []
-            for session in self.server.getGames(game_id):
+            for session in self.server.getGames(game_name):
                 result.append({
                     "name": session.name,
                     "version": session.version,
@@ -206,7 +206,7 @@ class HTTPRequestHandler(rawsocketHttp.RawsocketMixin, websocketHttp.WebsocketMi
                 self.send_error(http.HTTPStatus.BAD_REQUEST)
                 return
 
-            if "name" not in post_data or "game_id" not in post_data or "game_version" not in post_data or "secret_hash" not in post_data:
+            if "name" not in post_data or "game_name" not in post_data or "game_version" not in post_data or "secret_hash" not in post_data:
                 self.send_error(http.HTTPStatus.BAD_REQUEST)
                 return
             if  "public" not in post_data or "address" not in post_data or "port" not in post_data:
@@ -222,7 +222,7 @@ class HTTPRequestHandler(rawsocketHttp.RawsocketMixin, websocketHttp.WebsocketMi
             # TODO: Check secret hash
             game = GameSession(
                 name = post_data["name"], 
-                game_id = int(post_data["game_id"]), 
+                game_name = post_data["game_name"],
                 version = int(post_data["game_version"]),
                 public = bool(post_data["public"]),
                 public_address = self.client_address[0],
@@ -345,9 +345,9 @@ class Server(http.server.ThreadingHTTPServer):
         except KeyError:
             return None
 
-    def getGames(self, game_id):
+    def getGames(self, game_name):
         self.cleanTimeoutSessions()
-        return [session for session in self.game_sessions.values() if session.public and session.game_id == game_id]
+        return [session for session in self.game_sessions.values() if session.public and session.game_name == game_name]
 
     def cleanTimeoutSessions(self):
         self.game_sessions = {k:v for (k,v) in self.game_sessions.items() if not v.hasTimeout()}
