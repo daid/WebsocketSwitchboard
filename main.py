@@ -71,7 +71,7 @@ secrets = random.SystemRandom()
 class GameSession:
     KEY_LENGTH = 5
     SECRET_LENGTH = 32
-    KEY_CHARS = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    KEY_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
     def __init__(self, name, game_name, version, public, public_address, private_address, port):
         self.__lock = threading.Lock()
         self.__name = name
@@ -81,16 +81,16 @@ class GameSession:
         self.__public_address = public_address
         self.__private_address = private_address
         self.__port = port
-        self.__key = b""
-        self.__secret = b""
+        self.__key = ""
+        self.__secret = ""
         self.__waiting_websocket = None
         self.__waiting_rawsocket = None
         self.__timeout = time.monotonic() + 60.0
-        
+
         for n in range(self.KEY_LENGTH):
-            self.__key += bytes([secrets.choice(self.KEY_CHARS)])
+            self.__key += secrets.choice(self.KEY_CHARS)
         for n in range(self.SECRET_LENGTH):
-            self.__secret += bytes([secrets.choice(self.KEY_CHARS)])
+            self.__secret += secrets.choice(self.KEY_CHARS)
 
     @property
     def name(self):
@@ -118,7 +118,7 @@ class GameSession:
     @property
     def port(self):
         return self.__port
-    
+
     @property
     def key(self):
         return self.__key
@@ -176,7 +176,7 @@ class HTTPRequestHandler(rawsocketHttp.RawsocketMixin, websocketHttp.WebsocketMi
                 result.append({
                     "name": session.name,
                     "version": session.version,
-                    "key": session.key.decode("ascii"),
+                    "key": session.key,
                     "address": session.getAddressesFor(self.client_address[0]),
                     "port": session.port
                 })
@@ -189,7 +189,7 @@ class HTTPRequestHandler(rawsocketHttp.RawsocketMixin, websocketHttp.WebsocketMi
             return self.sendJson({
                 "name": game.name,
                 "version": game.version,
-                "key": game.key.decode("ascii"),
+                "key": game.key,
                 "address": game.getAddressesFor(self.client_address[0]),
                 "port": game.port
             })
@@ -224,7 +224,7 @@ class HTTPRequestHandler(rawsocketHttp.RawsocketMixin, websocketHttp.WebsocketMi
                     return
             # TODO: Check secret hash
             game = GameSession(
-                name = post_data["name"], 
+                name = post_data["name"],
                 game_name = post_data["game_name"],
                 version = int(post_data["game_version"]),
                 public = bool(post_data["public"]),
@@ -237,7 +237,7 @@ class HTTPRequestHandler(rawsocketHttp.RawsocketMixin, websocketHttp.WebsocketMi
                 self.send_error(http.HTTPStatus.INTERNAL_SERVER_ERROR)
                 return
 
-            return self.sendJson({"key": game.key.decode("ascii"), "secret": game.secret.decode("ascii")})
+            return self.sendJson({"key": game.key, "secret": game.secret})
         self.send_error(http.HTTPStatus.NOT_FOUND)
 
     def sendStaticFile(self, path):
@@ -274,6 +274,7 @@ class HTTPRequestHandler(rawsocketHttp.RawsocketMixin, websocketHttp.WebsocketMi
             if game.secret != secret:
                 logging.warning("Master connection: Secret mismatch")
                 return http.HTTPStatus.BAD_REQUEST
+            self.other = None
             if socket_type == "Web":
                 game.setWaitingWebsocket(self)
             else:
