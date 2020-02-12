@@ -42,7 +42,10 @@ class WebsocketMixin:
             self.send_header("Cache-Control", "No-Cache")
             self.send_header("Sec-WebSocket-Accept", base64.b64encode(hashlib.sha1((self.headers["sec-websocket-key"] + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("utf-8")).digest()).decode("utf-8"))
             if "Sec-WebSocket-Protocol" in self.headers:
-                self.send_header("Sec-WebSocket-Protocol", "chat")
+                if "binary" in self.headers["Sec-WebSocket-Protocol"]:
+                    self.send_header("Sec-WebSocket-Protocol", "binary")
+                else:
+                    self.send_header("Sec-WebSocket-Protocol", "chat")
             self.end_headers()
             self.close_connection = True
             
